@@ -9,7 +9,7 @@ function main() {
     cleanupTargetDir
 
     javac -cp "$GEMFIRE_HOME/lib/*" \
-      -d ./custom-functions/target/classes/com/broadcom/functions \
+      -d ./custom-functions/target/classes \
       custom-functions/src/com/broadcom/functions/*.java
 
     if [ $? -ne 0 ]; then
@@ -18,7 +18,7 @@ function main() {
     fi
 
     pushd ./custom-functions/target/classes || exit 1
-    jar cf ../custom-functions.jar com/broadcom/functions/*.class
+    jar cf ../custom-functions.jar *.class
     popd || exit 1
 }
 
