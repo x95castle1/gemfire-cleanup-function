@@ -1,5 +1,3 @@
-package com.broadcom.functions;
-
 import org.apache.geode.cache.Region;
 import org.apache.geode.cache.execute.Function;
 import org.apache.geode.cache.execute.FunctionContext;
@@ -16,7 +14,7 @@ public class DeleteOldMarketPricesFunction implements Function {
 
     private static final Logger logger = LogManager.getLogger(DeleteOldMarketPricesFunction.class);
     private static final long serialVersionUID = 1L;
-    private static final int BATCH_SIZE = 1000;
+    private static final int BATCH_SIZE = 10000;
 
     @Override
     public void execute(FunctionContext context) {
@@ -44,6 +42,36 @@ public class DeleteOldMarketPricesFunction implements Function {
             return;
         }
 
+        // Optional batch size parameter (default: 10000)
+        int batchSize = BATCH_SIZE;
+        if (args.length > 1) {
+            if (args[1] instanceof String) {
+                batchSize = Integer.parseInt((String) args[1]);
+            } else if (args[1] instanceof Number) {
+                batchSize = ((Number) args[1]).intValue();
+            }
+            logger.info("{}: Using custom batch size: {}", memberName, batchSize);
+        }
+
+        // Safety check: Ensure cutoff is at least 2 years in the past
+        long now = System.currentTimeMillis();
+        long twoYearsAgo = now - (2 * 365L * 24 * 60 * 60 * 1000);
+
+        if (cutoffTimestamp > twoYearsAgo) {
+            long daysUntilAllowed = (cutoffTimestamp - twoYearsAgo) / (24 * 60 * 60 * 1000);
+            String errorMsg = String.format(
+                    "ERROR: Safety check failed! Cutoff timestamp %d is too recent (%d days before the 2-year safety limit). " +
+                            "This function only deletes data older than 2 years. Current time: %d, Two years ago: %d",
+                    cutoffTimestamp, daysUntilAllowed, now, twoYearsAgo
+            );
+            logger.error(errorMsg);
+            context.getResultSender().lastResult(errorMsg);
+            return;
+        }
+
+        logger.info("{}: Safety check passed. Cutoff {} is {} days in the past",
+                memberName, cutoffTimestamp, (now - cutoffTimestamp) / (24 * 60 * 60 * 1000));
+
         int totalEntries = localRegion.size();
         AtomicLong deletedCount = new AtomicLong(0);
         AtomicLong scannedCount = new AtomicLong(0);
@@ -54,7 +82,7 @@ public class DeleteOldMarketPricesFunction implements Function {
         long startTime = System.currentTimeMillis();
 
         // Collect keys to delete in batches
-        List<Object> keysToDelete = new ArrayList<>(BATCH_SIZE);
+        List<Object> keysToDelete = new ArrayList<>(batchSize);
 
         try {
             // Iterate through all entries in the local data
@@ -72,16 +100,18 @@ public class DeleteOldMarketPricesFunction implements Function {
                         keysToDelete.add(entry.getKey());
 
                         // Delete in batches
-                        if (keysToDelete.size() >= BATCH_SIZE) {
+                        if (keysToDelete.size() >= batchSize) {
                             deleteBatch(localRegion, keysToDelete, deletedCount);
                         }
                     }
                 }
 
-                // Progress reporting every 100k entries
-                if (scannedCount.get() % 1000 == 0) {
-                    logger.info("{}: Progress - Scanned: {}, Deleted: {}",
-                            memberName, scannedCount.get(), deletedCount.get());
+                // Progress reporting based on batch size
+                // Report every 10 batches or 100k entries, whichever is smaller
+                int progressInterval = Math.min(batchSize * 10, 100000);
+                if (scannedCount.get() % progressInterval == 0) {
+                    logger.info("{}: Progress - Scanned: {}, Deleted: {} (batch size: {})",
+                            memberName, scannedCount.get(), deletedCount.get(), batchSize);
                 }
             }
 
